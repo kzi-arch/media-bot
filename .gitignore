@@ -1,0 +1,91 @@
+# ─── Secrets — WAJIB, jangan pernah di-commit ────────────────────────────────
+.env
+.env.*
+!.env.example
+*.token
+*.secret
+
+# Cookie platform = kredensial sesi penuh. Siapa pun yang memegang file ini
+# bisa login sebagai Anda di platform tersebut.
+cookies/*
+!cookies/.gitkeep
+!cookies/README.md
+
+# ─── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ─── Virtualenv ─────────────────────────────────────────────────────────────
+.venv/
+venv/
+ENV/
+env/
+
+# ─── Cache tooling ──────────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ─── Hasil unduhan & file sementara ─────────────────────────────────────────
+# Bot memakai tempfile di WORK_DIR, tapi kadang run manual meninggalkan file
+downloads/
+media/
+output/
+*.part
+*.ytdl
+*.temp
+*.tmp
+
+# Ekstensi media — jangan sampai file uji ikut ter-commit
+*.mp4
+*.webm
+*.mkv
+*.mov
+*.m4a
+*.mp3
+*.opus
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+
+# ─── Log & database lokal ───────────────────────────────────────────────────
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+
+# ─── yt-dlp / gallery-dl artefak ────────────────────────────────────────────
+# Cache ekstraktor & arsip unduhan yang dibuat otomatis
+.yt-dlp-cache/
+.yt-dlp-archive.txt
+gallery-dl.conf
+.gallery-dl/
+
+# ─── Editor & OS ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Docker (kalau nanti ditambahkan) ───────────────────────────────────────
+docker-compose.override.yml
