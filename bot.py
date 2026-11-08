@@ -1,6 +1,6 @@
-"""Entrypoint bot. Satu router, alur tiga langkah:
+"""Entrypoint bot. Alur tiga langkah:
 
-link masuk -> probe -> keyboard pilih tipe -> unduh -> kirim -> cleanup
+link masuk -> resolve -> probe -> keyboard pilih tipe -> unduh -> kirim
 """
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InputMediaPhoto,
+    Message,
+)
 
 import downloader as dl
 from config import CONFIG
@@ -30,12 +35,13 @@ log = logging.getLogger("media-bot")
 router = Router()
 _sem = asyncio.Semaphore(CONFIG.max_concurrent)
 
-# token -> MediaInfo, dibuang setelah dipakai atau kedaluwarsa
 _pending: dict[str, tuple[dl.MediaInfo, float]] = {}
-PENDING_TTL = 600  # 10 menit
+PENDING_TTL = 600
 
-IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-VIDEO_EXT = {".mp4", ".webm", ".mkv", ".mov"}
+# satu sumber kebenaran: ekstensi dari downloader.py
+IMAGE_EXT = dl.IMAGE_EXTS
+VIDEO_EXT = dl.VIDEO_EXTS
+AUDIO_EXT = dl.AUDIO_EXTS
 
 
 # ─── perintah ────────────────────────────────────────────────────────
@@ -62,7 +68,8 @@ async def cmd_cookie(m: Message) -> None:
     await m.answer(
         f"Cookie aktif: <b>{active}</b>\n\n"
         "Untuk konten yang butuh login, letakkan file di folder <code>cookies/</code>:\n"
-        "<code>instagram.txt</code>, <code>x.txt</code>, <code>facebook.txt</code>\n\n"
+        "<code>instagram.txt</code>, <code>x.txt</code>, <code>facebook.txt</code>, "
+        "<code>pinterest.txt</code>, <code>threads.txt</code>\n\n"
         "Ekspor dengan ekstensi <i>Get cookies.txt LOCALLY</i>, lalu restart bot.",
         parse_mode=ParseMode.HTML,
     )
@@ -74,38 +81,45 @@ async def on_text(m: Message) -> None:
     url = dl.extract_url(m.text or "")
     if not url:
         return await m.reply(
-            "Tidak ada URL di pesan itu. Kirim satu link langsung."
-        )
-
-    if not dl.is_supported(url):
-        return await m.reply(
-            "Domain itu belum ada di daftar cepat. Saya coba tetap — kalau gagal, "
-            "kemungkinan butuh login."
+            "Tidak ada URL di pesan itu. Kirim satu link langsung "
+            "(harus diawali <code>https://</code>).",
+            parse_mode=ParseMode.HTML,
         )
 
     status = await m.reply("🔍 Membaca metadata…")
 
+    # 1) bentangkan short link (pin.it, youtu.be, t.co, fb.watch)
     try:
-        info = await dl.probe(url)
-    except dl.DownloadError as exc:
-        await status.edit_text(f"❌ {exc}")
-        return
-    except Exception as exc:
-        log.exception("probe gagal: %s", url)
-        await status.edit_text(f"❌ Gagal membaca media: {str(exc)[:200]}")
-        return
+        resolved = await dl.resolve_short_url(url)
+    except Exception:
+        resolved = url
 
+    # 2) probe — sudah punya fallback internal; di sini cukup tangani error akhir
+    try:
+        info = await dl.probe(resolved)
+    except dl.DownloadError as exc:
+        return await status.edit_text(f"❌ {exc}")
+    except Exception as exc:
+        log.exception("probe gagal: %s", resolved)
+        return await status.edit_text(f"❌ Gagal membaca media: {str(exc)[:200]}")
+
+    # 3) simpan & tampilkan keyboard
     token = secrets.token_urlsafe(8)
     _pending[token] = (info, time.monotonic())
     _sweep_pending()
 
     duration = f" · {info.duration}s" if info.duration else ""
+    via = ""
+    if resolved != url:
+        via = f"\n<sub>{resolved}</sub>"
+
     await status.edit_text(
         f"<b>{info.title}</b>\n"
-        f"<code>{info.platform}</code>{duration}\n\n"
+        f"<code>{info.platform}</code>{duration}{via}\n\n"
         "Pilih yang mau diunduh:",
         reply_markup=type_keyboard(info, token),
         parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
 
 
@@ -122,8 +136,7 @@ async def on_choice(cq: CallbackQuery) -> None:
     await cq.answer()
 
     if mode == "cancel":
-        await cq.message.edit_text("Dibatalkan.")
-        return
+        return await cq.message.edit_text("Dibatalkan.")
 
     if mode == "video" and not info.has_video:
         return await cq.message.edit_text("Media ini tidak punya video.")
@@ -137,27 +150,24 @@ async def on_choice(cq: CallbackQuery) -> None:
         with tempfile.TemporaryDirectory(dir=CONFIG.work_dir, prefix="job-") as tmp:
             workdir = Path(tmp)
             try:
-                await cq.bot.send_chat_action(cq.message.chat.id, ChatAction.UPLOAD_VIDEO)
-                files = await asyncio.wait_for(
-                    dl.download(info.url, mode, workdir), timeout=180
+                await cq.bot.send_chat_action(
+                    cq.message.chat.id, ChatAction.UPLOAD_VIDEO
                 )
-            except asyncio.TimeoutError:
-                await cq.message.edit_text("⏱ Timeout setelah 180 detik. Coba link lain.")
-                return
+                files = await dl.download(info.url, mode, workdir, timeout=150)
+            except dl.DownloadError as exc:
+                log.warning("download gagal: %s → %s", info.url, exc)
+                return await cq.message.edit_text(f"❌ {exc}")
             except Exception as exc:
-                log.exception("download gagal: %s", info.url)
-                msg = exc.args[0] if isinstance(exc, dl.DownloadError) else str(exc)[:200]
-                await cq.message.edit_text(f"❌ {msg}")
-                return
+                log.exception("download tidak terduga: %s", info.url)
+                return await cq.message.edit_text(f"❌ {str(exc)[:200]}")
 
             if not files:
-                await cq.message.edit_text("Tidak ada file yang berhasil diunduh.")
-                return
+                return await cq.message.edit_text("Tidak ada file yang berhasil diunduh.")
 
             sent = await _deliver(cq.message, files, info)
             await cq.message.edit_text(
                 f"✅ Selesai — {sent} file terkirim.\n"
-                f"<a href=\"{info.url}\">sumber</a>",
+                f'<a href="{info.url}">sumber</a>',
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
@@ -171,9 +181,10 @@ async def _deliver(msg: Message, files: list[Path], info: dl.MediaInfo) -> int:
 
     images = [f for f in files if f.suffix.lower() in IMAGE_EXT and f.stat().st_size <= limit]
     videos = [f for f in files if f.suffix.lower() in VIDEO_EXT and f.stat().st_size <= limit]
+    audios = [f for f in files if f.suffix.lower() in AUDIO_EXT and f.stat().st_size <= limit]
     oversize = [f for f in files if f.stat().st_size > limit]
 
-    # foto: album kalau >1
+    # foto: album kalau >1, foto tunggal kalau 1
     for i in range(0, len(images), 10):
         chunk = images[i:i + 10]
         if not chunk:
@@ -182,13 +193,12 @@ async def _deliver(msg: Message, files: list[Path], info: dl.MediaInfo) -> int:
             if len(chunk) == 1:
                 await msg.answer_photo(FSInputFile(chunk[0]), caption=info.title[:900])
             else:
-                from aiogram.types import InputMediaPhoto
-                await msg.answer_media_group([
-                    InputMediaPhoto(media=FSInputFile(p)) for p in chunk
-                ])
+                await msg.answer_media_group(
+                    [InputMediaPhoto(media=FSInputFile(p)) for p in chunk]
+                )
             sent += len(chunk)
         except Exception:
-            log.exception("kirim foto gagal")
+            log.exception("kirim album gagal, fallback ke dokumen")
             for p in chunk:
                 try:
                     await msg.answer_document(FSInputFile(p), caption=p.name)
@@ -211,7 +221,19 @@ async def _deliver(msg: Message, files: list[Path], info: dl.MediaInfo) -> int:
                 await msg.answer_document(FSInputFile(v), caption=v.name)
                 sent += 1
             except Exception:
-                pass
+                log.exception("fallback dokumen gagal: %s", v)
+
+    for a in audios:
+        try:
+            await msg.answer_audio(FSInputFile(a), title=info.title[:64])
+            sent += 1
+        except Exception:
+            log.exception("kirim audio gagal, coba dokumen: %s", a)
+            try:
+                await msg.answer_document(FSInputFile(a), caption=a.name)
+                sent += 1
+            except Exception:
+                log.exception("fallback dokumen gagal: %s", a)
 
     if oversize:
         names = ", ".join(f.name for f in oversize[:3])

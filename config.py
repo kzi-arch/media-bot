@@ -42,8 +42,10 @@ def load_config() -> Config:
     cookies = {}
     for platform, env_key, default in (
         ("instagram", "COOKIE_INSTAGRAM", "cookies/instagram.txt"),
-        ("x", "COOKIE_X", "cookies/x.txt"),
-        ("facebook", "COOKIE_FACEBOOK", "cookies/facebook.txt"),
+        ("x",         "COOKIE_X",         "cookies/x.txt"),
+        ("facebook",  "COOKIE_FACEBOOK",  "cookies/facebook.txt"),
+        ("pinterest", "COOKIE_PINTEREST", "cookies/pinterest.txt"),   # ← baru
+        ("threads",   "COOKIE_THREADS",   "cookies/threads.txt"),     # ← baru
     ):
         path = _cookie(env_key, default)
         if path:
